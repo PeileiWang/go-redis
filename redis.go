@@ -126,6 +126,9 @@ type baseClient struct {
 	opt      *Options
 	connPool pool.Pooler
 
+	getConnAddition     func(ctx context.Context) (*pool.Conn, error)
+	releaseConnAddition func(ctx context.Context, cn *pool.Conn, err error)
+
 	onClose func() error // hook called when client is closed
 }
 
@@ -134,6 +137,14 @@ func newBaseClient(opt *Options, connPool pool.Pooler) *baseClient {
 		opt:      opt,
 		connPool: connPool,
 	}
+}
+
+func (c *baseClient) GetConnAddition(fn func(ctx context.Context) (*pool.Conn, error)) {
+	c.getConnAddition = fn
+}
+
+func (c *baseClient) ReleaseConnAddition(fn func(ctx context.Context, cn *pool.Conn, err error)) {
+	c.releaseConnAddition = fn
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -271,13 +282,23 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
-	cn, err := c.getConn(ctx)
+	var cn *pool.Conn
+	var err error
+	if c.getConnAddition != nil {
+		cn, err = c.getConnAddition(ctx)
+	} else {
+		cn, err = c.getConn(ctx)
+	}
 	if err != nil {
 		return err
 	}
 
 	defer func() {
-		c.releaseConn(ctx, cn, err)
+		if c.releaseConnAddition != nil {
+			c.releaseConnAddition(ctx, cn, err)
+		} else {
+			c.releaseConn(ctx, cn, err)
+		}
 	}()
 
 	done := ctx.Done() //nolint:ifshort
